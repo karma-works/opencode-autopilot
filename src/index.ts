@@ -8,6 +8,7 @@ import { Tier } from "./classifier/tier.ts";
 import { loadAutoModeConfig, type RawAutoModeConfig } from "./config.ts";
 import { LoopDetectedError, ToolBlockedError } from "./errors.ts";
 import { judge } from "./judge/client.ts";
+import { POLICY_TEMPLATE, WORKSPACE_POLICY } from "./judge/policy-content.ts";
 import { createHostedJudgeModel } from "./judge/providers.ts";
 import type { JudgeConfig, Message as JudgeMessage } from "./judge/types.ts";
 import { detectLoop, detectTimeout } from "./loop/detector.ts";
@@ -32,6 +33,16 @@ async function notifyPause(client: PluginInput["client"], message: string): Prom
   await client.tui.showToast({ body: { message, variant: "error" } });
 }
 
+function buildJudgeConfig(provider: string | null, model: string | null): JudgeConfig {
+  return {
+    provider,
+    model,
+    timeoutMs: 5_000,
+    workspacePolicy: WORKSPACE_POLICY,
+    policyTemplate: POLICY_TEMPLATE
+  };
+}
+
 export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Record<string, unknown>) => {
   const { directory, client } = rawInput as PluginInput;
   const root = directory;
@@ -40,14 +51,25 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
   await mkdir(opencodeDir, { recursive: true });
   const statePath = join(opencodeDir, "autopilot-state.json");
   const auditLog = createBunAuditLogger(join(opencodeDir, "autopilot.log"));
-  const judgeConfig = await readJudgeConfig(root, config.judge.provider, config.judge.model);
+  const judgeConfig = buildJudgeConfig(config.judge.provider, config.judge.model);
   const judgeModel = createHostedJudgeModel();
   const sessions = new Map<string, AutopilotState>();
 
+  await log(client, "info", `Autopilot plugin initialized. root=${root}, maxSteps=${config.maxSteps}, timeoutMs=${config.timeoutMs}`);
+
+  async function ensureSession(sessionID: string): Promise<AutopilotState> {
+    let state = sessions.get(sessionID);
+    if (!state) {
+      state = await loadOrInitState(statePath, sessionID, config.maxSteps, config.timeoutMs);
+      sessions.set(sessionID, state);
+      await auditLog.write({ timestamp: new Date().toISOString(), sessionId: sessionID, event: "session-start", message: "Session initialized on first tool call." });
+    }
+    return state;
+  }
+
   return {
     "tool.execute.before": async (input, output): Promise<void> => {
-      const state = sessions.get(input.sessionID);
-      if (!state) return;
+      const state = await ensureSession(input.sessionID);
       const args = (output.args ?? {}) as Record<string, unknown>;
       const classification = classifyToolCall(input.tool, args, config.trustBoundary);
       const call: ToolCallSummary = { tool: input.tool, args, tier: classification.tier, timestamp: Date.now() };
@@ -92,7 +114,7 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
         const sessionID = event.properties.info.id;
         const state = await loadOrInitState(statePath, sessionID, config.maxSteps, config.timeoutMs);
         sessions.set(sessionID, state);
-        await auditLog.write({ timestamp: new Date().toISOString(), sessionId: sessionID, event: "session-start", message: "Autopilot session initialized." });
+        await auditLog.write({ timestamp: new Date().toISOString(), sessionId: sessionID, event: "session-start", message: "Session initialized on session.created." });
         return;
       }
 
@@ -133,13 +155,5 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
     }
   };
 };
-
-async function readJudgeConfig(root: string, provider: string | null, model: string | null): Promise<JudgeConfig> {
-  const [workspacePolicy, policyTemplate] = await Promise.all([
-    Bun.file(join(root, "src/judge/policy.md")).text(),
-    Bun.file(join(root, "src/judge/policy-template.md")).text()
-  ]);
-  return { provider, model, timeoutMs: 5_000, workspacePolicy, policyTemplate };
-}
 
 export default AutopilotPlugin;
