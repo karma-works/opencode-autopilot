@@ -10,7 +10,7 @@ OpenCode Autopilot is a Phase 1 plugin prototype for an autonomous `auto` mode. 
 
 OpenCode does not include a sandbox by default. Unlike Claude Code, Codex, GitHub Copilot, and others, it runs with full access to your filesystem and network out of the box. When running an autonomous agent like Autopilot, this is especially important to be aware of.
 
-It is highly recommended to run OpenCode inside a sandbox. On Linux and macOS, [nono](https://github.com/nicowillis/nono) works well:
+It is highly recommended to run OpenCode inside a sandbox. On Linux and macOS, [nono](https://nono.sh/) works well ([what is nono?](https://huggingface.co/blog/lukehinds/nono-agent-sandbox)):
 
 ```sh
 nono run --allow-cwd --profile opencode -- opencode .
