@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createBunAuditLogger } from "./audit/logger.ts";
 import { classifyToolCall } from "./classifier/classify.ts";
 import { Tier } from "./classifier/tier.ts";
-import { loadAutoModeConfig } from "./config.ts";
+import { loadAutoModeConfig, type RawAutoModeConfig } from "./config.ts";
 import { LoopDetectedError, ToolBlockedError } from "./errors.ts";
 import { judge } from "./judge/client.ts";
 import { createHostedJudgeModel } from "./judge/providers.ts";
@@ -102,10 +102,10 @@ async function notifyPause(serverUrl: string | URL | undefined, message: string)
   });
 }
 
-export const AutopilotPlugin: Plugin = async (rawContext: unknown) => {
+export const AutopilotPlugin: Plugin = async (rawContext: unknown, rawOptions?: Record<string, unknown>) => {
   const context = rawContext as PluginContext;
   const root = projectRoot(context);
-  const config = await loadAutoModeConfig(root);
+  const config = await loadAutoModeConfig(root, (rawOptions ?? {}) as RawAutoModeConfig);
   const opencodeDir = join(root, ".opencode");
   await mkdir(opencodeDir, { recursive: true });
   const statePath = join(opencodeDir, "autopilot-state.json");

@@ -1,24 +1,10 @@
 {
-  "plugin": ["opencode-autopilot"],
+  "$schema": "https://opencode.ai/config.json",
   "agent": {
     "auto": {
-      "systemPrompt": ".opencode/modes/auto.md",
-      "tools": {
-        "allow": ["*"],
-        "deny": []
-      }
-    }
-  },
-  "autoMode": {
-    "maxSteps": 100,
-    "timeoutMinutes": 30,
-    "writableRoots": ["."],
-    "allowedNetworkHosts": [],
-    "bashFastScreen": false,
-    "judgeIncludeRemoteOutputs": false,
-    "judge": {
-      "provider": null,
-      "model": null
+      "mode": "primary",
+      "prompt": "{file:.opencode/modes/auto.md}",
+      "permission": "allow"
     }
   }
 }

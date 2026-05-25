@@ -1,8 +1,9 @@
 {
-  "name": "opencode-autopilot",
+  "name": "@karma-works/opencode-autopilot",
   "version": "0.1.0",
   "description": "Autonomous OpenCode auto mode plugin with risk classification, loop detection, and LLM judging.",
   "type": "module",
+  "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
