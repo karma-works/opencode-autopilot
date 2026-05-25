@@ -14,6 +14,7 @@ export interface ProposedToolCall {
 export interface JudgeConfig {
   readonly provider: string | null;
   readonly model: string | null;
+  readonly providerKey: string | null;
   readonly timeoutMs: number;
   readonly workspacePolicy: string;
   readonly policyTemplate: string;

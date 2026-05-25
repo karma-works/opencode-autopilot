@@ -1,19 +1,121 @@
 import type { JudgeConfig, JudgeModel } from "./types.ts";
 
-interface HostedJudgeSelection {
-  readonly provider: "anthropic" | "openai" | "google";
+type HostedProvider = "anthropic" | "openai" | "google" | "openrouter" | "fireworks";
+
+interface ProviderDef {
+  readonly envKeys: readonly string[];
+  readonly defaultModel: string;
+  readonly endpoint: (model: string, key: string) => string;
+  readonly headers: (key: string) => Record<string, string>;
+  readonly body: (model: string, prompt: string) => unknown;
+  readonly parseText: (response: unknown) => string;
+}
+
+function openaiBody(model: string, prompt: string): unknown {
+  return { model, temperature: 0, messages: [{ role: "user", content: prompt }] };
+}
+
+function parseOpenAI(response: unknown): string {
+  const choices = (response as { readonly choices?: readonly { readonly message?: { readonly content?: unknown } }[] }).choices;
+  const content = choices?.[0]?.message?.content;
+  if (typeof content !== "string") throw new Error("Judge response did not include text content.");
+  return content;
+}
+
+function parseAnthropic(response: unknown): string {
+  const content = (response as { readonly content?: readonly { readonly type?: string; readonly text?: unknown }[] }).content;
+  const text = content?.find((part) => part.type === "text")?.text;
+  if (typeof text !== "string") throw new Error("Anthropic judge response did not include text content.");
+  return text;
+}
+
+function parseGoogle(response: unknown): string {
+  const candidates = (response as { readonly candidates?: readonly { readonly content?: { readonly parts?: readonly { readonly text?: unknown }[] } }[] }).candidates;
+  const text = candidates?.[0]?.content?.parts?.[0]?.text;
+  if (typeof text !== "string") throw new Error("Google judge response did not include text content.");
+  return text;
+}
+
+// Providers ordered by preference for automatic selection when no provider is specified.
+// Models chosen for lowest cost while reliably following a structured JSON system prompt.
+const PROVIDERS: Record<HostedProvider, ProviderDef> = {
+  anthropic: {
+    envKeys: ["ANTHROPIC_API_KEY"],
+    defaultModel: "claude-haiku-4-5",
+    endpoint: () => "https://api.anthropic.com/v1/messages",
+    headers: (key) => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }),
+    body: (model, prompt) => ({ model, max_tokens: 512, temperature: 0, messages: [{ role: "user", content: prompt }] }),
+    parseText: parseAnthropic,
+  },
+  openai: {
+    envKeys: ["OPENAI_API_KEY"],
+    defaultModel: "gpt-4o-mini",
+    endpoint: () => "https://api.openai.com/v1/chat/completions",
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+    body: openaiBody,
+    parseText: parseOpenAI,
+  },
+  google: {
+    envKeys: ["GOOGLE_API_KEY"],
+    defaultModel: "gemini-2.0-flash-lite",
+    // Google embeds the model name and key in the URL rather than headers.
+    endpoint: (model, key) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+    headers: () => ({}),
+    body: (_model, prompt) => ({ generationConfig: { temperature: 0 }, contents: [{ role: "user", parts: [{ text: prompt }] }] }),
+    parseText: parseGoogle,
+  },
+  // OpenRouter: OpenAI-compatible proxy. Default model is Llama 3.1 8B (paid tier).
+  // For zero-cost prototyping use "meta-llama/llama-3.1-8b-instruct:free" (200 req/day limit).
+  openrouter: {
+    envKeys: ["OPENROUTER_API_KEY"],
+    defaultModel: "meta-llama/llama-3.1-8b-instruct",
+    endpoint: () => "https://openrouter.ai/api/v1/chat/completions",
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+    body: openaiBody,
+    parseText: parseOpenAI,
+  },
+  // Fireworks AI: OpenAI-compatible, fast serverless inference.
+  // Qwen3 8B is the cheapest model reliable enough for structured JSON output (~$0.20/M tokens).
+  fireworks: {
+    envKeys: ["FIREWORKS_API_KEY"],
+    defaultModel: "accounts/fireworks/models/qwen3-8b",
+    endpoint: () => "https://api.fireworks.ai/inference/v1/chat/completions",
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+    body: openaiBody,
+    parseText: parseOpenAI,
+  },
+};
+
+const SCAN_ORDER: readonly HostedProvider[] = ["anthropic", "openai", "google", "openrouter", "fireworks"];
+
+function resolveKey(def: ProviderDef, override: string | null): string | null {
+  if (override) return override;
+  for (const envKey of def.envKeys) {
+    const value = process.env[envKey];
+    if (value) return value;
+  }
+  return null;
+}
+
+interface ProviderSelection {
+  readonly def: ProviderDef;
+  readonly key: string;
   readonly model: string;
 }
 
-function selectHostedJudge(config: JudgeConfig): HostedJudgeSelection | null {
-  if (config.provider === "anthropic" || (!config.provider && process.env.ANTHROPIC_API_KEY)) {
-    return { provider: "anthropic", model: config.model ?? "claude-haiku-4-5" };
+function selectProvider(config: JudgeConfig): ProviderSelection | null {
+  if (config.provider) {
+    const def = PROVIDERS[config.provider as HostedProvider];
+    if (!def) return null;
+    const key = resolveKey(def, config.providerKey);
+    if (!key) return null;
+    return { def, key, model: config.model ?? def.defaultModel };
   }
-  if (config.provider === "openai" || (!config.provider && process.env.OPENAI_API_KEY)) {
-    return { provider: "openai", model: config.model ?? "gpt-4o-mini" };
-  }
-  if (config.provider === "google" || (!config.provider && process.env.GOOGLE_API_KEY)) {
-    return { provider: "google", model: config.model ?? "gemini-2.0-flash-lite" };
+
+  for (const id of SCAN_ORDER) {
+    const def = PROVIDERS[id];
+    const key = resolveKey(def, null);
+    if (key) return { def, key, model: config.model ?? def.defaultModel };
   }
   return null;
 }
@@ -35,66 +137,19 @@ async function postJson(url: string, headers: HeadersInit, body: unknown, timeou
   }
 }
 
-function textFromOpenAI(response: unknown): string {
-  const choices = (response as { readonly choices?: readonly { readonly message?: { readonly content?: unknown } }[] }).choices;
-  const content = choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("OpenAI judge response did not include text content.");
-  return content;
-}
-
-function textFromAnthropic(response: unknown): string {
-  const content = (response as { readonly content?: readonly { readonly type?: string; readonly text?: unknown }[] }).content;
-  const text = content?.find((part) => part.type === "text")?.text;
-  if (typeof text !== "string") throw new Error("Anthropic judge response did not include text content.");
-  return text;
-}
-
-function textFromGoogle(response: unknown): string {
-  const candidates = (response as { readonly candidates?: readonly { readonly content?: { readonly parts?: readonly { readonly text?: unknown }[] } }[] }).candidates;
-  const text = candidates?.[0]?.content?.parts?.[0]?.text;
-  if (typeof text !== "string") throw new Error("Google judge response did not include text content.");
-  return text;
-}
-
 export function createHostedJudgeModel(): JudgeModel {
   return {
     async complete(prompt: string, config: JudgeConfig): Promise<string> {
-      const selection = selectHostedJudge(config);
-      if (!selection) throw new Error("No supported judge provider is configured. Set autoMode.judge.provider/model and the matching API key.");
-
-      if (selection.provider === "anthropic") {
-        const key = process.env.ANTHROPIC_API_KEY;
-        if (!key) throw new Error("ANTHROPIC_API_KEY is required for the Anthropic judge.");
-        const response = await postJson(
-          "https://api.anthropic.com/v1/messages",
-          { "x-api-key": key, "anthropic-version": "2023-06-01" },
-          { model: selection.model, max_tokens: 512, temperature: 0, messages: [{ role: "user", content: prompt }] },
-          config.timeoutMs
+      const selection = selectProvider(config);
+      if (!selection) {
+        throw new Error(
+          "No judge provider available. Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, FIREWORKS_API_KEY."
         );
-        return textFromAnthropic(response);
       }
-
-      if (selection.provider === "openai") {
-        const key = process.env.OPENAI_API_KEY;
-        if (!key) throw new Error("OPENAI_API_KEY is required for the OpenAI judge.");
-        const response = await postJson(
-          "https://api.openai.com/v1/chat/completions",
-          { Authorization: `Bearer ${key}` },
-          { model: selection.model, temperature: 0, messages: [{ role: "user", content: prompt }] },
-          config.timeoutMs
-        );
-        return textFromOpenAI(response);
-      }
-
-      const key = process.env.GOOGLE_API_KEY;
-      if (!key) throw new Error("GOOGLE_API_KEY is required for the Google judge.");
-      const response = await postJson(
-        `https://generativelanguage.googleapis.com/v1beta/models/${selection.model}:generateContent?key=${encodeURIComponent(key)}`,
-        {},
-        { generationConfig: { temperature: 0 }, contents: [{ role: "user", parts: [{ text: prompt }] }] },
-        config.timeoutMs
-      );
-      return textFromGoogle(response);
+      const { def, key, model } = selection;
+      const url = def.endpoint(model, key);
+      const response = await postJson(url, def.headers(key), def.body(model, prompt), config.timeoutMs);
+      return def.parseText(response);
     }
   };
 }

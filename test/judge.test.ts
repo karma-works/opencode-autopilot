@@ -10,6 +10,7 @@ const baseInput: Omit<JudgeInput, "model"> = {
   config: {
     provider: null,
     model: null,
+    providerKey: null,
     timeoutMs: 50,
     workspacePolicy: "Allow low-risk local actions.",
     policyTemplate: "{workspace_policy}"

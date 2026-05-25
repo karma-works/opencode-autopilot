@@ -33,10 +33,11 @@ async function notifyPause(client: PluginInput["client"], message: string): Prom
   await client.tui.showToast({ body: { message, variant: "error" } });
 }
 
-function buildJudgeConfig(provider: string | null, model: string | null): JudgeConfig {
+function buildJudgeConfig(provider: string | null, model: string | null, providerKey: string | null = null): JudgeConfig {
   return {
     provider,
     model,
+    providerKey,
     timeoutMs: 5_000,
     workspacePolicy: WORKSPACE_POLICY,
     policyTemplate: POLICY_TEMPLATE
@@ -51,9 +52,10 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
   await mkdir(opencodeDir, { recursive: true });
   const statePath = join(opencodeDir, "autopilot-state.json");
   const auditLog = createBunAuditLogger(join(opencodeDir, "autopilot.log"));
-  const judgeConfig = buildJudgeConfig(config.judge.provider, config.judge.model);
   const judgeModel = createHostedJudgeModel();
   const sessions = new Map<string, AutopilotState>();
+  let activeProviderID: string | null = null;
+  let activeProviderKey: string | null = null;
 
   await log(client, "info", `Autopilot plugin initialized. root=${root}, maxSteps=${config.maxSteps}, timeoutMs=${config.timeoutMs}`);
 
@@ -68,6 +70,11 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
   }
 
   return {
+    "chat.params": async (input, _output): Promise<void> => {
+      activeProviderID = input.provider.info.id;
+      activeProviderKey = input.provider.info.key ?? null;
+    },
+
     "tool.execute.before": async (input, output): Promise<void> => {
       const state = await ensureSession(input.sessionID);
       const args = (output.args ?? {}) as Record<string, unknown>;
@@ -81,6 +88,7 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
       }
 
       if (classification.tier === Tier.T3) {
+        const judgeConfig = buildJudgeConfig(config.judge.provider ?? activeProviderID, config.judge.model, activeProviderKey);
         const decision = await judge({
           userMessages: [] satisfies readonly JudgeMessage[],
           toolCallHistory: state.callHistory,
