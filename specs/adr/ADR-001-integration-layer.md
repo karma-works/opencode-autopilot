@@ -12,7 +12,7 @@ OpenCode Autopilot needs to integrate with OpenCode's existing architecture. The
 
 OpenCode provides two extension mechanisms relevant to autopilot:
 1. **Mode definitions** — Markdown files or `opencode.json` entries that configure model, tool permissions, and system prompt
-2. **Plugins** — JS/TS modules (run via Bun) with hooks: `tool.execute.before`, `session.idle`, `session.compacted`, etc.
+2. **Plugins** — JS/TS modules (run via Bun) with named hooks (`tool.execute.before`, `experimental.session.compacting`) and a unified `event` hook for session lifecycle events (`session.idle`, `session.created`, `session.compacted`, etc.)
 
 ---
 

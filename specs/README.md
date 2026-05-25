@@ -40,11 +40,11 @@ Background research that informed these decisions is in [`../research/`](../rese
 
 1. **Phase 1 is a plugin, Phase 2 is core** — fastest path to a working system without blocking on upstream contributions (ADR-001)
 
-2. **Two-layer judge stack using existing open models** — Llama Guard 3-1B via Ollama or ShieldAgent 8B as the semantic LLM judge + Llama Prompt Guard 2-86M for injection scan on tool outputs. No command-pattern blocklist; judge reasons about outcome/effect. No custom model built. (ADR-002)
+2. **LLM judge defaults to cheapest model from user's existing provider** — Haiku for Anthropic users, gpt-4o-mini for OpenAI, gemini-2.0-flash-lite for Google. Zero additional setup or API keys. Llama Guard 3-1B via Ollama is a supported local override. Layer 2 (Llama Prompt Guard 2-86M) scans tool outputs for injection — deferred to Phase 2. No command-pattern blocklist; judge reasons about outcome/effect. (ADR-002)
 
 3. **Loop detection is external to the model** — 4 mechanisms: step limit, repetition detection, A-B alternation, wall-clock timeout. Models cannot detect their own loops (ADR-003)
 
-4. **Four risk tiers** — T1 (read-only, auto-approve) → T2 (reversible local, auto-approve) → T3 (boundary-crossing, route to judge) → T4 (irreversible, hard-block) (ADR-004)
+4. **Three risk tiers** — T1 (read-only, auto-approve) → T2 (reversible local writes, auto-approve) → T3 (all bash + boundary-crossing, LLM judge required). T4 was removed — a static hard-block list provides false security for bash calls. (ADR-004)
 
 5. **Trust boundary = smallest set that lets the task complete** — CWD by default, configurable `writableRoots` and `allowedNetworkHosts`, protected paths unconditional (ADR-005)
 

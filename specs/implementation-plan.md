@@ -11,105 +11,181 @@
 Three phases. Phase 1 ships a working autopilot as a community plugin. Phase 2 proposes it to OpenCode core. Phase 3 handles hardening and ecosystem integration.
 
 ```
-Phase 1: Plugin PoC          (weeks 1–4)  → working autopilot as plugin
-Phase 2: Core Integration    (weeks 5–10) → upstream PR to OpenCode
-Phase 3: Hardening           (weeks 11–14) → polish, security, ecosystem
+Phase 0: Pre-implementation verification  (days 1–2)  → resolve critical gaps
+Phase 1: Plugin-Based Prototype           (weeks 1–4)  → working autopilot as plugin
+Phase 2: Core Integration                 (weeks 5–10) → upstream PR to OpenCode
+Phase 3: Hardening                        (weeks 11–14) → polish, security, ecosystem
 ```
+
+---
+
+## Phase 0: Pre-Implementation Verification (MUST complete before Phase 1)
+
+Two questions must be answered by reading OpenCode's actual source code or running experiments. Without answers, Phase 1 cannot produce a working loop.
+
+### 0.1 The Loop Driver ✅ RESOLVED
+
+**`tui.prompt.append` cannot drive the loop.** It is a UI-only event that inserts text into the terminal input box via `input.insertText()` — the user still has to press Enter. Using it in an async loop is also dangerous: it targets the global active prompt and will dump text into the user's cursor position in any open session.
+
+**Two reliable mechanisms to trigger a new agent turn from `session.idle`:**
+
+**Option A — `client.executeCommand` (interactive TUI sessions):**
+```javascript
+await client.executeCommand({ command: "message", args: ["continue"] });
+```
+Registers as a prompt submission and kicks off a full agent execution cycle. Must use the session-scoped client (passed into the plugin constructor), not a global event.
+
+**Option B — HTTP API via `@opencode-ai/sdk` (headless/CI):**
+POST to the session's execution endpoint with an explicit session ID. Fully decoupled from TUI state. Identical behavior in interactive and headless modes. Preferred for unattended runs.
+
+**Phase 1 uses Option A for interactive mode, Option B for headless** (detected via `process.env.CI` or `--headless` flag).
+
+**Task completion detection:** Agent is instructed via system prompt to emit a sentinel token `AUTOPILOT_DONE` as the last thing it writes when it considers the task complete. `session.idle` watches for this token and triggers clean shutdown. The sentinel is stripped from user-visible output. This is more reliable than trying to parse prose for completion signals.
+
+### 0.2 Mode Selection UX ✅ RESOLVED
+
+Verified from OpenCode source (`packages/opencode/src/cli/cmd/tui/context/local.tsx`, `keybind.ts`, `config/agent.ts`):
+
+**Keyboard shortcuts (confirmed):**
+- **Tab** → `agent_cycle` — cycles to next agent
+- **Shift+Tab** → `agent_cycle_reverse` — cycles to previous agent
+- **`<leader>a`** → `agent_list` — opens agent picker dialog
+
+**Filter rule (confirmed):** Tab cycle shows all agents where `mode !== "subagent" && !hidden`. This includes both `mode: "primary"` and `mode: "all"` agents.
+
+**Auto-registration (confirmed):** `loadMode()` in `config/agent.ts` scans `.opencode/modes/*.md` and assigns `mode: "primary"` automatically. Placing `auto.md` at `.opencode/modes/auto.md` registers it in the Tab cycle with no other configuration.
+
+**Config key:** The current source uses `"agent"` (not `"mode"`) as the top-level key for agent definitions in `opencode.json`. `"mode"` is deprecated.
+
+**Practical UX:** User places `auto.md` in `.opencode/modes/auto.md` and presses Tab to cycle to it. No CLI flag, no slash command needed. Switching is a live swap of the active agent — the conversation context remains.
+
+### 0.3 Write the System Prompt (`modes/auto.md`) ✅ RESOLVED
+
+Written at `modes/auto.md`. Key decisions:
+- Agent works continuously without asking for permission mid-task
+- `ToolBlockedError` → find alternative approach, never stop
+- Completion signalled by sentinel token `AUTOPILOT_DONE` on its own line
+- Escalation (stop, wait for user, do NOT emit `AUTOPILOT_DONE`) only after 3+ failed attempts or genuinely missing information
+
+### 0.4 Write the Judge Prompts ✅ RESOLVED
+
+Written at `src/judge/policy-template.md` and `src/judge/policy.md`.
+
+Both adapted from openai/codex (Apache 2.0) with attribution. Key adaptations:
+- Replaced org/tenant language with workspace/session language
+- Removed Codex's interactive tool-call investigation guidelines (our judge is single-shot, not an interactive agent)
+- Added OpenCode-specific policy categories: filesystem trust boundary violation, external network state mutation, irreversible remote action
+- Kept universally applicable sections: data exfiltration, credential probing, persistent security weakening, destructive local actions
+- Added `suggested_alternative` field to output schema
+- Template variable renamed from `{tenant_policy_config}` to `{workspace_policy}`
+
+### 0.5 Decide: Llama Prompt Guard in Phase 1 or Defer?
+
+Llama Prompt Guard 2-86M is a BERT-style encoder — it cannot run through OpenCode's provider system or Ollama. Running it requires either:
+- **Option A:** Transformers.js in Bun — feasible, adds a significant dependency (~200MB model download on first run)
+- **Option B:** HuggingFace Inference API — adds a second API key requirement, defeats zero-setup goal
+- **Option C:** Defer to Phase 2 — Phase 1 ships without injection scanning on tool outputs; warning is added to README
+
+**Recommendation: Option C for Phase 1.** The primary injection defense is the judge never seeing remote tool outputs (ADR-002 source-aware stripping). The Prompt Guard layer adds defense-in-depth but is not required for basic functionality. Defer to Phase 2 when it can be implemented properly.
+
+### 0.6 Scope Out Conversational Trust Narrowing for Phase 1
+
+ADR-005 promises mid-session narrowing ("don't push"). Implementing this correctly requires either keyword matching (fragile) or an LLM classification call on every user message (expensive). **Scope this out of Phase 1 explicitly.** Phase 1 ships with config-file-only trust boundary definition. Add to Phase 2 backlog.
+
+### 0.7 Scope Out Scope-Pinning Startup Hint for Phase 1
+
+ADR-005 describes an LLM call at autopilot activation that suggests a minimum trust boundary. This is a significant extra feature. **Scope out of Phase 1.** Deferred to Phase 2.
 
 ---
 
 ## Phase 1: Plugin-Based Prototype
 
 ### Goal
+
 Ship a complete, production-usable autopilot as an OpenCode plugin. All core logic (risk classification, judge integration, loop detection) lands here and is tested independently of core.
 
-### Deliverables
-
-#### 1.1 Project Scaffold
+### File Structure
 
 ```
 opencode-autopilot/
   src/
-    index.ts               # Plugin entry point
+    index.ts                    # Plugin entry point + loop driver
     classifier/
-      tier.ts              # Risk tier types and classification logic
-      t4-blocklist.ts      # T4 hard-block patterns
-      classify.ts          # classifyToolCall() pure function
+      tier.ts                   # Risk tier types (T1/T2/T3)
+      classify.ts               # classifyToolCall() pure function
     judge/
-      client.ts            # Secondary LLM judge client
-      prompt.md            # Judge prompt template (version-controlled)
-      types.ts             # JudgeDecision type
+      client.ts                 # LLM judge client (via OpenCode's provider abstraction)
+      policy-template.md        # Fixed judge rules framework
+      policy.md                 # Pluggable outcome risk taxonomy
+      types.ts                  # JudgeDecision type
     loop/
-      detector.ts          # Loop detection (all 4 mechanisms)
-      state.ts             # AutopilotState type and persistence
+      detector.ts               # Loop detection (4 mechanisms)
+      state.ts                  # AutopilotState type and persistence
     trust/
-      boundary.ts          # Trust boundary evaluation
-      protected-paths.ts   # T4 protected path list
+      boundary.ts               # Trust boundary evaluation
+      protected-paths.ts        # Protected path list (never auto-approve writes)
     audit/
-      logger.ts            # Structured audit log writer
+      logger.ts                 # Structured audit log writer
   modes/
-    auto.md               # System prompt for auto mode
+    auto.md                     # Agent system prompt for auto mode
   test/
     classifier.test.ts
     loop.test.ts
     judge.test.ts
     trust.test.ts
-  opencode.json           # Mode definition + autoMode config defaults
+  opencode.json                 # Mode definition + autoMode config defaults
   package.json
   README.md
 ```
 
-#### 1.2 Risk Classifier (`src/classifier/`)
+### 1.1 Risk Classifier (`src/classifier/`)
 
 Pure function: `classifyToolCall(tool: string, args: Record<string, unknown>, boundary: TrustBoundary): Tier`
 
-Test coverage requirements:
+Tier assignments per ADR-004:
+- **T1:** `read`, `grep`, `glob`, `list` within trust boundary; `webfetch` GET to allowedNetworkHosts
+- **T2:** `write`, `edit`, `patch` within writableRoots and not protected path; `todowrite`; `webfetch` GET to localhost
+- **T3:** All `bash` calls (unconditionally); structured tool writes outside writableRoots or to protected paths; `webfetch` POST/PUT/DELETE; `webfetch` GET to non-allowed hosts
+
+Test coverage:
 - All built-in OpenCode tools classified correctly
 - All border cases from ADR-004 table covered
-- T4 blocklist: 100% pattern coverage
-- Edge cases: symlinks, relative paths, environment variable expansion in bash args
+- Protected path list: every entry has a test
+- Edge cases: symlinks, relative paths that escape CWD (`../`), absolute paths
 
-#### 1.3 Judge Stack (`src/judge/`)
-
-Three-layer stack using existing open models (see ADR-002 and `research/risk-judge-models-huggingface.md`):
+### 1.2 Judge Client (`src/judge/`)
 
 ```typescript
 interface JudgeDecision {
   decision: "ALLOW" | "DENY";
   rationale: string;
-  layer: "sh-guard" | "llm-judge" | "circuit-breaker";
   suggestedAlternative?: string;
 }
 
-// Layer 1: sh-guard AST pre-filter (bash tool calls only)
-function runShGuard(command: string): ShGuardResult  // npm: sh-guard
-
-// Layer 2: LLM semantic judge (configurable model via Ollama or API)
-async function runLLMJudge(
+async function judge(
   userMessages: Message[],
-  toolCallHistory: ToolCallSummary[],  // no tool outputs — injection defense
+  toolCallHistory: ToolCallSummary[],  // source-aware: remote outputs stripped
   proposedCall: ProposedToolCall,
   trustBoundary: TrustBoundary,
-  judgeConfig: JudgeConfig,
+  config: JudgeConfig,
 ): Promise<JudgeDecision>
-
-// Layer 3: Prompt injection scan on tool outputs (parallel with execution)
-async function scanForInjection(toolOutput: string): Promise<InjectionScanResult>
-// Model: Llama Prompt Guard 2-86M or ProtectAI DeBERTa v2
 ```
 
-**Default judge model:** `llama-guard3:1b` via local Ollama — zero marginal cost, no API key.  
-**Alternative:** `thu-coai/ShieldAgent` via HuggingFace Inference API for higher accuracy.  
-**Setup requirement:** `ollama pull llama-guard3:1b` (documented in plugin README).
+Uses OpenCode's existing provider client (`@opencode-ai/sdk`) — same auth, same model selection as primary agent.
 
-Note: sh-guard is **not** used as a blocking layer (see ADR-002 Rejected Options). All bash calls go to the LLM judge for semantic outcome evaluation.
+Default model: cheapest model from user's configured primary provider:
+- Anthropic → `claude-haiku-4-5`
+- OpenAI → `gpt-4o-mini`
+- Google → `gemini-2.0-flash-lite`
+- Other → same model as primary agent
 
-The LLM judge client:
-- Formats the Llama Guard 3 chat template with custom S15/S16/S17 category definitions for CWD boundary / network / irreversible remote actions
-- Fails-closed on timeout (> 5s) or parse failure: returns `DENY` with rationale "Judge unavailable"
-- Retries once on network error before failing-closed
+Source-aware output stripping (ADR-002):
+- Local tool outputs (bash stdout from local commands, file reads, grep results): included
+- Remote outputs (webfetch responses, bash stdout from curl/wget/ssh): stripped
 
-#### 1.4 Loop Detector (`src/loop/`)
+Failure modes: fail-closed on timeout (> 5s), network error, or unparseable response.
+
+### 1.3 Loop Detector (`src/loop/`)
 
 ```typescript
 interface LoopDetectionResult {
@@ -121,163 +197,208 @@ interface LoopDetectionResult {
 function detectLoop(state: AutopilotState, newCall: ToolCallSummary): LoopDetectionResult
 ```
 
-All four mechanisms (ADR-003) implemented as independent checks within this function. Unit-tested against crafted call sequences.
+Four mechanisms (ADR-003):
+1. Step limit (default 100, configurable)
+2. Identical-call repetition (3 consecutive identical tool+args)
+3. A-B alternation (2 complete A→B→A→B cycles)
+4. Wall-clock timeout (default 30 min, configurable)
 
-#### 1.5 Plugin Entry Point (`src/index.ts`)
+Plus circuit breaker: 3 consecutive judge denials or 10 total denials → pause + escalate.
+
+### 1.4 Plugin Entry Point (`src/index.ts`)
 
 ```typescript
-export const AutopilotPlugin = async ({ project, client, $, directory }) => {
+import type { Plugin } from "@opencode-ai/plugin";
+
+export const AutopilotPlugin: Plugin = async ({ project, client, directory, serverUrl }) => {
   const config = loadAutoModeConfig(project);
-  const state = await loadOrInitState(directory, client.session.id);
+  // Map<sessionID, AutopilotState> — community pattern for multi-session safety
+  const sessions = new Map<string, AutopilotState>();
 
   return {
-    "tool.execute.before": async (input) => {
-      // 1. Classify
-      // 2. T4 → throw immediately
-      // 3. T3 → await judge → throw on DENY
-      // 4. T1/T2 → log, allow
-      // 5. Update loop state
-      // 6. Check loop detection → throw on detection
+    // Named hook: fires before every tool call, can throw to cancel
+    "tool.execute.before": async (input, output) => {
+      // input: { tool, sessionID, callID }  output: { args }
+      const state = sessions.get(input.sessionID);
+      if (!state) return; // not an autopilot session
+      const tier = classifyToolCall(input.tool, output.args, config.trustBoundary);
+
+      if (tier === Tier.T3) {
+        const decision = await judge(/* ... source-aware history ... */);
+        if (decision.decision === "DENY") {
+          state.recordDenial(decision);
+          checkCircuitBreaker(state);
+          throw new ToolBlockedError(decision.rationale, decision.suggestedAlternative);
+        }
+      }
+
+      const loopResult = detectLoop(state, { tool: input.tool, args: output.args });
+      if (loopResult.detected) throw new LoopDetectedError(loopResult.message);
+
+      state.recordCall({ tool: input.tool, args: output.args, tier });
+      auditLog.write({ tool: input.tool, tier, decision: "ALLOW" });
     },
-    "session.created": async () => { /* init state */ },
-    "session.idle": async () => { /* check if done vs stuck */ },
-    "session.compacted": async () => { /* persist state */ },
+
+    // Named hook: inject denial/loop history into compaction context
     "experimental.session.compacting": async (input, output) => {
-      /* inject denial history and constraints into compaction prompt */
+      const state = sessions.get(input.sessionID);
+      if (!state) return;
+      // inject state summary into output.context[] so it survives compaction
+    },
+
+    // Unified event hook: handles all session lifecycle events
+    event: async ({ event }) => {
+      if (event.type === "session.created") {
+        const sessionID = event.properties.info.id;
+        sessions.set(sessionID, await loadOrInitState(directory, sessionID));
+        return;
+      }
+
+      if (event.type === "session.compacted") {
+        await sessions.get(event.properties.sessionID)?.persist();
+        return;
+      }
+
+      if (event.type === "session.idle") {
+        const sessionID = event.properties.sessionID;
+        const state = sessions.get(sessionID);
+        if (!state) return; // not an autopilot session
+
+        // Check for AUTOPILOT_DONE sentinel via SDK — no direct access to output buffer
+        const messages = await client.session.messages({ path: { id: sessionID } });
+        const lastAssistant = messages.data?.findLast((m) => m.info.role === "assistant");
+        const lastText = lastAssistant?.parts?.findLast((p) => p.type === "text")?.text ?? "";
+        if (lastText.trimEnd().endsWith("AUTOPILOT_DONE")) {
+          await auditLog.writeCompletion(state);
+          sessions.delete(sessionID);
+          return; // task complete — do not inject continuation
+        }
+
+        if (state.circuitBreakerTripped) {
+          // POST /tui/publish — HTTP endpoint confirmed; SDK wrapper method not yet verified
+          await fetch(new URL("/tui/publish", serverUrl), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type: "tui.toast.show", properties: { message: "[AUTO PAUSED] Too many denials. Review autopilot.log.", variant: "error" } }),
+          });
+          return; // paused — wait for user intervention
+        }
+        if (Date.now() - state.startedAt > config.timeoutMs) {
+          await client.session.prompt({ path: { id: sessionID }, body: { parts: [{ type: "text", text: "AUTOPILOT_TIMEOUT: summarise what you completed and what remains." }] } });
+          return;
+        }
+        await client.session.prompt({ path: { id: sessionID }, body: { parts: [{ type: "text", text: "Continue." }] } });
+      }
     },
   };
 };
 ```
 
-#### 1.6 Auto Mode System Prompt (`modes/auto.md`)
+### 1.5 Auto Mode System Prompt (`modes/auto.md`)
 
-The system prompt instructs the agent to:
-- Operate autonomously without waiting for per-action confirmation
-- Treat `ToolBlockedError` as a signal to find a safer alternative approach
-- Report progress at meaningful checkpoints (task complete, major decision point, blocked)
-- Complete the full task before stopping
-- Escalate to the user only when genuinely stuck (not just when one approach fails)
+Full prompt content to be written as part of Phase 0.3. The system prompt is what makes this auto mode — it must be written before any integration testing can be meaningful.
 
-#### 1.7 Tests
+### 1.6 Mode Definition (`opencode.json`)
 
-- Unit tests for classifier, loop detector, trust boundary
-- Integration test: mock OpenCode session, run a 10-step sequence, verify tier classifications and judge calls
-- Adversarial tests: prompt injection payloads in synthetic tool outputs — verify judge is not influenced
+```json
+{
+  "plugin": ["opencode-autopilot"],
+  "agent": {
+    "auto": {
+      "model": "claude-sonnet-4-6",
+      "systemPrompt": ".opencode/modes/auto.md",
+      "tools": { "allow": ["*"], "deny": [] }
+    }
+  },
+  "autoMode": {
+    "maxSteps": 100,
+    "timeoutMinutes": 30,
+    "writableRoots": ["."],
+    "allowedNetworkHosts": [],
+    "bashFastScreen": false,
+    "judgeIncludeRemoteOutputs": false,
+    "judge": {
+      "provider": null,
+      "model": null
+    }
+  }
+}
+```
+
+`judge.provider` and `judge.model` default to null — the plugin auto-selects the cheapest model from the user's configured primary provider.
 
 ### Phase 1 Success Criteria
 
-- [ ] Plugin installs and activates via `opencode.json` `plugin` list
-- [ ] `auto` mode is selectable in OpenCode
-- [ ] T4 blocklist prevents all listed patterns
-- [ ] Secondary LLM judge is called for T3 actions and not called for T1/T2
-- [ ] Loop detection fires within 3 identical calls
+- [ ] Plugin installs via `opencode.json` `plugin` list with zero additional setup
+- [ ] User can activate `auto` mode by pressing Tab to cycle to it (auto-registered via `.opencode/modes/auto.md`)
+- [ ] Agent runs multiple turns autonomously without user input
+- [ ] T1/T2 tool calls execute without judge invocation
+- [ ] All `bash` calls invoke the LLM judge
+- [ ] Judge DENY injects `ToolBlockedError` with rationale; agent attempts alternative approach
+- [ ] Loop detection fires within 3 identical consecutive calls
 - [ ] Circuit breaker pauses autopilot after 3 consecutive denials
-- [ ] Audit log is written to `.opencode/autopilot.log`
-- [ ] Headless mode exits with correct exit codes
+- [ ] State survives session compaction
+- [ ] Audit log written to `.opencode/autopilot.log`
+- [ ] Headless mode exits with correct exit codes: 0 (complete), 1 (circuit breaker), 2 (loop), 3 (timeout), 4 (step limit)
 
 ---
 
 ## Phase 2: Core Integration
 
 ### Goal
-Contribute `auto` mode as a first-class mode to OpenCode core, with proper TUI integration and lifecycle hooks that plugins cannot provide.
+
+Contribute `auto` mode as a first-class mode to OpenCode core, with proper TUI integration and lifecycle hooks.
 
 ### Prerequisites
-- Phase 1 plugin is shipped and battle-tested (min 4 weeks of real use)
-- OpenCode maintainers have reviewed the approach (pre-PR discussion in GitHub issues)
-- Core hook API for `automode.*` lifecycle events is agreed upon
+
+- Phase 1 plugin shipped and used in practice (min 4 weeks)
+- OpenCode maintainers engaged via GitHub issue before PR
+- Phase 0.1 loop driver mechanism validated in production
 
 ### Deliverables
 
-#### 2.1 New Lifecycle Hooks
-
-Propose and implement new hooks that the plugin prototype revealed as necessary:
-
-```typescript
-"automode.action.classifying"   // before classification
-"automode.action.evaluating"    // before judge call  
-"automode.action.allowed"       // after allow decision
-"automode.action.denied"        // after deny decision
-"automode.loop.detected"        // on loop detection
-"automode.circuitbreaker.trip"  // on circuit breaker
-"automode.session.complete"     // on task completion
+**2.1 New lifecycle hooks** — proposed to OpenCode core:
+```
+automode.action.classifying
+automode.action.evaluating
+automode.action.allowed
+automode.action.denied
+automode.loop.detected
+automode.circuitbreaker.trip
+automode.session.complete
 ```
 
-These hooks allow third-party plugins to extend autopilot behavior (e.g., custom notifications, custom denial handling).
+**2.2 TUI status bar:**
+- `[AUTO 42/100]` — mode + step counter
+- `T2 ✓` / `T3 ✓` / `T3 ✗` — tier of last action
+- `[AUTO PAUSED — 3 denials] [c]ontinue [q]uit [b]uild-mode` — circuit breaker state
+- `/trust` command — show active trust boundary and constraints
 
-#### 2.2 TUI Status Bar Integration
+**2.3 First-class mode registration** — `auto` appears in TUI mode selector alongside `build` and `plan`, with keybinding
 
-- Mode indicator: `[AUTO]` in status bar with current step count: `[AUTO 42/100]`
-- Risk tier indicator: brief flash showing tier of last action: `T2 ✓` / `T3 ✓` / `T3 ✗`
-- Circuit breaker state: `[AUTO PAUSED — 3 denials]` with `[c]ontinue [q]uit [b]uild-mode` prompt
-- Trust boundary summary accessible via new `/trust` command
+**2.4 Async judge in agent loop** — proper async integration without event-loop blocking workarounds
 
-#### 2.3 Core Mode Registration
+**2.5 Llama Prompt Guard integration** — injection scan on tool outputs via Transformers.js in Bun
 
-Register `auto` as a built-in mode alongside `build` and `plan`:
-- First-class menu item in TUI mode selector
-- Keybinding (e.g., Ctrl+Shift+A) for mode switch
-- Persisted in session state so compaction doesn't lose mode context
-
-#### 2.4 Async Risk Judge in Agent Loop
-
-Integrate the risk judge into the agent's tool execution path at the core level:
-- Eliminates the event-loop blocking of the plugin approach
-- Proper async/await without Bun-specific workarounds
-- Judge calls are cancellable (Ctrl+C cancels pending judge call, not just the tool call)
-
-#### 2.5 Migrate Plugin Logic to Core Package
-
-The Phase 1 classifier, loop detector, and state manager move to OpenCode's core packages. The Phase 1 plugin becomes a thin wrapper that calls into core — maintaining backward compatibility for users on older versions.
+**2.6 Conversational trust narrowing** — detect explicit constraint phrases in user messages
 
 ### Phase 2 Success Criteria
 
-- [ ] `auto` mode appears in TUI mode selector without any plugin
+- [ ] `auto` mode in TUI mode selector without plugin
 - [ ] Status bar shows step count and last action tier
-- [ ] Circuit breaker UI is interactive (not just a toast)
-- [ ] New `automode.*` lifecycle hooks are documented and tested
-- [ ] Existing Phase 1 plugin continues working as a compatibility shim
+- [ ] Circuit breaker UI is interactive
+- [ ] `automode.*` lifecycle hooks documented and tested
+- [ ] Phase 1 plugin continues working as a compatibility shim
 
 ---
 
 ## Phase 3: Hardening and Ecosystem
 
-### Goal
-Security hardening, observability, and ecosystem integrations that make autopilot production-ready for teams.
-
-### Deliverables
-
-#### 3.1 Prompt Injection Hardening
-
-- Input probe: scan tool outputs for prompt injection patterns before they enter the agent's context (Layer 1 from Claude Code's design)
-- Adversarial test suite: known prompt injection payloads from public research
-- Automated regression testing against injection corpus
-
-#### 3.2 CI/CD Integration
-
-- GitHub Actions example workflow
-- Exit code documentation
-- `--json` event stream for pipeline consumption
-- Docker container reference configuration with appropriate sandbox
-
-#### 3.3 Observability
-
-- OpenTelemetry traces for each autopilot session (step count, tier distribution, denial rate, judge latency)
-- Grafana dashboard template
-- Alert rules: high denial rate, loop detection frequency, judge availability
-
-#### 3.4 Custom Judge Model Support
-
-- Documentation for bringing a fine-tuned risk classifier model
-- Example: using `codex-auto-review1` style specialized model instead of general-purpose Haiku
-- Evaluation harness for comparing judge model performance
-
-#### 3.5 Trust Boundary Profiles
-
-Pre-built trust boundary profiles for common scenarios:
-- `strict`: No network, writableRoots = `src/` only
-- `standard`: CWD writes, localhost network, GitHub API
-- `open`: CWD writes, all read-only network, outbound POST to configured hosts
+**3.1** Adversarial test suite (prompt injection corpus, known evasion patterns)  
+**3.2** CI/CD integration (GitHub Actions workflow, `--json` event stream, Docker config)  
+**3.3** Observability (OpenTelemetry traces, Grafana dashboard template)  
+**3.4** Trust boundary profiles (`strict`, `standard`, `open`)  
+**3.5** Scope-pinning startup hint (LLM-inferred minimum trust boundary suggestion)
 
 ---
 
@@ -285,23 +406,21 @@ Pre-built trust boundary profiles for common scenarios:
 
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
-| OpenCode plugin API changes break Phase 1 | Medium | Pin to tested OpenCode version; integration tests catch regressions |
-| Secondary LLM judge latency degrades UX | Medium | Use fastest available model; 5s timeout with fail-closed |
-| `experimental.session.compacting` hook removed | Low | Graceful fallback: inject constraints into next user prompt instead |
-| Judge prompt jailbroken via crafted tool description | Low | Judge prompt hardening; adversarial test suite |
-| Loop detection false positives (legitimate repeated calls) | Medium | Tunable thresholds; window size configurable; identical-args requirement |
-| OpenCode core PR rejected by maintainers | Low | Pre-PR discussion; Phase 1 proves the concept; plugin remains viable |
+| `session.idle` + `tui.prompt.append` cannot drive the loop autonomously | **High** | Phase 0.1 resolves this before any other work |
+| OpenCode plugin API changes break Phase 1 | Medium | Pin to tested OpenCode version; integration tests |
+| Judge latency degrades UX on CPU-only machines | Medium | `bashFastScreen` opt-in; document GPU recommendation |
+| `experimental.session.compacting` hook removed | Low | Graceful fallback: inject constraints into next user prompt |
+| Judge prompt jailbroken via crafted tool argument | Low | Adversarial test suite in Phase 3 |
+| Loop detection false positives on legitimate repeated calls | Medium | Tunable thresholds; window size configurable |
+| OpenCode core PR rejected | Low | Pre-PR discussion; Phase 1 plugin remains viable long-term |
 
 ---
 
-## Open Questions (to resolve before Phase 1 code)
+## Open Questions Resolved
 
-1. **Judge model selection UX:** Should the plugin auto-select the cheapest available model, or require explicit config? Lean toward auto-select with a warning if no fast model is available.
-
-2. **T3 → T2 elevation via config (`autoMode.autoApprovePatterns`):** How specific must the pattern be to avoid accidental elevation? Exact tool+args pattern required, or globs allowed?
-
-3. **Conversational trust narrowing:** How do we detect "don't push" in free-form user messages? Keyword matching is fragile; running a classification LLM call on every user message is expensive. Consider: only parse explicit constraint phrases at session start.
-
-4. **Multi-agent mode:** When the primary agent delegates to subagents, does autopilot mode apply to subagents? Proposed: yes, with the same risk judge but the subagent's delegated task as the stated intent.
-
-5. **Cost accounting:** Should autopilot track and display judge model costs separately from primary agent costs? Useful for teams managing budgets.
+1. **Judge model auto-selection:** Cheapest model from user's configured primary provider. No explicit config required. ✅
+2. **T3 → T2 elevation:** Users add hosts to `allowedNetworkHosts` (webfetch) or expand `writableRoots` (writes). No arbitrary pattern elevation. ✅
+3. **Conversational trust narrowing:** Deferred to Phase 2. ✅
+4. **Multi-agent:** Subagent tool calls — behavior depends on whether `tool.execute.before` fires for subagent calls. Verify in Phase 0.1. Proposed behavior: yes, same judge, subagent's delegated task as stated intent.
+5. **Llama Prompt Guard:** Deferred to Phase 2. ✅
+6. **Cost accounting:** Judge calls logged with model/provider. Aggregated cost display deferred to Phase 2. ✅

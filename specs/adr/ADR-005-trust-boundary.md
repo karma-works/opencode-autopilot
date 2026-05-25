@@ -38,7 +38,7 @@ The trust boundary has two dimensions:
 ```
 
 **Protected paths (unconditional, regardless of writableRoots):**
-These paths can never be autonomously written to — they are always T4:
+These paths can never be autonomously written to — they are always T3 (routed to judge, and the judge will unconditionally deny them per policy.md):
 - `.git/` (git internals)
 - `~/.gitconfig`, `~/.gitconfig.local`
 - `~/.ssh/` (SSH keys and config)
