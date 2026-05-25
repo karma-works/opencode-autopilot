@@ -1,0 +1,36 @@
+{
+  "name": "opencode-autopilot",
+  "version": "0.1.0",
+  "description": "Autonomous OpenCode auto mode plugin with risk classification, loop detection, and LLM judging.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "modes",
+    "README.md",
+    "logo.svg",
+    "opencode.json"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.15.10"
+  },
+  "devDependencies": {
+    "@opencode-ai/sdk": "^1.15.10",
+    "@types/bun": "^1.3.2",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "autopilot",
+    "agent"
+  ],
+  "license": "Apache-2.0"
+}

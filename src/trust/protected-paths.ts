@@ -1,0 +1,19 @@
+export const PROTECTED_PATHS: readonly string[] = [
+  ".git",
+  "~/.gitconfig",
+  "~/.gitconfig.local",
+  "~/.ssh",
+  "~/.bashrc",
+  "~/.zshrc",
+  "~/.profile",
+  "~/.bash_profile",
+  "~/.config/opencode",
+  "/etc",
+  "/usr",
+  "/bin",
+  "/sbin",
+  "/lib",
+  "/proc",
+  "/sys",
+  "/dev"
+];

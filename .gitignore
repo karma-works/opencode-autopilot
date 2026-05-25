@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.opencode/autopilot.log
+.opencode/autopilot-state.json
