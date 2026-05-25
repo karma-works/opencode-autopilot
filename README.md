@@ -6,6 +6,16 @@
 
 OpenCode Autopilot is a Phase 1 plugin prototype for an autonomous `auto` mode. It keeps OpenCode moving between turns, classifies tool-call risk, routes risky actions through an LLM judge interface, detects loops, and writes an audit trail.
 
+## Safety Note
+
+OpenCode does not include a sandbox by default. Unlike Claude Code, Codex, GitHub Copilot, and others, it runs with full access to your filesystem and network out of the box. When running an autonomous agent like Autopilot, this is especially important to be aware of.
+
+It is highly recommended to run OpenCode inside a sandbox. On Linux and macOS, [nono](https://github.com/nicowillis/nono) works well:
+
+```sh
+nono run --allow-cwd --profile opencode -- opencode .
+```
+
 ## Status
 
 This repository currently implements the Phase 1 plugin scaffold and pure logic modules:
