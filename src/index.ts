@@ -54,6 +54,7 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
   const auditLog = createBunAuditLogger(join(opencodeDir, "autopilot.log"));
   const judgeModel = createHostedJudgeModel();
   const sessions = new Map<string, AutopilotState>();
+  const sessionAgents = new Map<string, string>();
   let activeProviderID: string | null = null;
   let activeProviderKey: string | null = null;
 
@@ -71,11 +72,13 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
 
   return {
     "chat.params": async (input, _output): Promise<void> => {
+      sessionAgents.set(input.sessionID, input.agent);
       activeProviderID = input.provider.info.id;
       activeProviderKey = input.provider.info.key ?? null;
     },
 
     "tool.execute.before": async (input, output): Promise<void> => {
+      if (sessionAgents.get(input.sessionID) !== "auto") return;
       const state = await ensureSession(input.sessionID);
       const args = (output.args ?? {}) as Record<string, unknown>;
       const classification = classifyToolCall(input.tool, args, config.trustBoundary);
@@ -118,11 +121,10 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
     },
 
     event: async ({ event }: { event: Event }): Promise<void> => {
-      if (event.type === "session.created") {
+      if (event.type === "session.deleted") {
         const sessionID = event.properties.info.id;
-        const state = await loadOrInitState(statePath, sessionID, config.maxSteps, config.timeoutMs);
-        sessions.set(sessionID, state);
-        await auditLog.write({ timestamp: new Date().toISOString(), sessionId: sessionID, event: "session-start", message: "Session initialized on session.created." });
+        sessions.delete(sessionID);
+        sessionAgents.delete(sessionID);
         return;
       }
 
