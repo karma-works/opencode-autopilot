@@ -97,12 +97,12 @@ Writes to protected paths are T3 (routed to judge) regardless of configuration.
 - Is this action reversible within the session?
 - Does this match any category of unconditionally prohibited outcomes?
 
-The judge's custom category definitions (S15/S16/S17 in Llama Guard 3) define the unconditionally prohibited outcomes:
-- **S15** — Trust boundary violation (filesystem)
-- **S16** — External network state mutation
-- **S17** — Irreversible remote action
+The unconditionally prohibited outcome categories are defined in `src/judge/policy.md` and apply regardless of judge model:
+- **Filesystem trust boundary violation** — writes to protected paths or outside `writableRoots`
+- **External network state mutation** — POST/PUT/DELETE to untrusted hosts
+- **Irreversible remote action** — force-push to default branches, publish to package registries, production deploys
 
-These outcomes are blocked regardless of how they are achieved — whether by `rm`, a Perl script, a compiled binary, or any other means.
+These outcomes are blocked regardless of how they are achieved — whether by `rm`, a Perl script, a compiled binary, or any other means. When using Llama Guard 3 as the judge model, these map to custom safety categories injected at inference time; when using a hosted model (the default), they are enforced via the text-based `policy.md` prompt.
 
 ---
 

@@ -27,20 +27,18 @@ Two questions must be answered by reading OpenCode's actual source code or runni
 
 **`tui.prompt.append` cannot drive the loop.** It is a UI-only event that inserts text into the terminal input box via `input.insertText()` — the user still has to press Enter. Using it in an async loop is also dangerous: it targets the global active prompt and will dump text into the user's cursor position in any open session.
 
-**Two reliable mechanisms to trigger a new agent turn from `session.idle`:**
+**The correct mechanism (verified from `packages/sdk/js/src/gen/sdk.gen.ts`):**
 
-**Option A — `client.executeCommand` (interactive TUI sessions):**
 ```javascript
-await client.executeCommand({ command: "message", args: ["continue"] });
+await client.session.prompt({
+  path: { id: sessionID },
+  body: { parts: [{ type: "text", text: "Continue." }] }
+});
 ```
-Registers as a prompt submission and kicks off a full agent execution cycle. Must use the session-scoped client (passed into the plugin constructor), not a global event.
 
-**Option B — HTTP API via `@opencode-ai/sdk` (headless/CI):**
-POST to the session's execution endpoint with an explicit session ID. Fully decoupled from TUI state. Identical behavior in interactive and headless modes. Preferred for unattended runs.
+This POSTs to `POST /session/{id}/message`, registers as a prompt submission, and kicks off a full agent execution cycle. It works identically in interactive TUI and headless/CI modes — there is no need for separate code paths. The session ID comes from `event.properties.sessionID` in the `session.idle` event. `client.executeCommand` does not exist.
 
-**Phase 1 uses Option A for interactive mode, Option B for headless** (detected via `process.env.CI` or `--headless` flag).
-
-**Task completion detection:** Agent is instructed via system prompt to emit a sentinel token `AUTOPILOT_DONE` as the last thing it writes when it considers the task complete. `session.idle` watches for this token and triggers clean shutdown. The sentinel is stripped from user-visible output. This is more reliable than trying to parse prose for completion signals.
+**Task completion detection:** Agent is instructed via system prompt to emit a sentinel token `AUTOPILOT_DONE` as the last thing it writes when it considers the task complete. `session.idle` watches for this token (via `client.session.messages()`) and triggers clean shutdown. The sentinel is stripped from user-visible output. This is more reliable than trying to parse prose for completion signals.
 
 ### 0.2 Mode Selection UX ✅ RESOLVED
 
@@ -296,7 +294,7 @@ export const AutopilotPlugin: Plugin = async ({ project, client, directory, serv
 
 ### 1.5 Auto Mode System Prompt (`modes/auto.md`)
 
-Full prompt content to be written as part of Phase 0.3. The system prompt is what makes this auto mode — it must be written before any integration testing can be meaningful.
+Written at `modes/auto.md` (Phase 0.3 ✅). Key behaviours encoded: work continuously without asking permission, treat `ToolBlockedError` as a signal to find an alternative approach, emit `AUTOPILOT_DONE` on its own line only when the task is genuinely complete, escalate (without emitting the sentinel) only after 3+ failed attempts or genuinely missing information.
 
 ### 1.6 Mode Definition (`opencode.json`)
 
@@ -353,7 +351,7 @@ Contribute `auto` mode as a first-class mode to OpenCode core, with proper TUI i
 
 - Phase 1 plugin shipped and used in practice (min 4 weeks)
 - OpenCode maintainers engaged via GitHub issue before PR
-- Phase 0.1 loop driver mechanism validated in production
+- Phase 1 loop driver mechanism validated in production
 
 ### Deliverables
 

@@ -8,7 +8,7 @@
 
 ## Context
 
-The "trust boundary" defines the set of resources within which the agent can act autonomously (T1/T2) vs. actions that cross the boundary and require judge evaluation (T3) or hard-block (T4).
+The "trust boundary" defines the set of resources within which the agent can act autonomously (T1/T2) vs. actions that cross the boundary and require judge evaluation (T3).
 
 A trust boundary that is too wide makes autopilot dangerous. A trust boundary that is too narrow makes it useless (everything routes to the judge or gets blocked).
 
@@ -79,7 +79,7 @@ Read-only GET requests to hosts in `allowedNetworkHosts` are classified as T1. M
 
 Users can narrow (not widen) the trust boundary mid-session via natural language:
 
-- "Don't push anything" → agent interprets `git push` as T4 for the rest of the session
+- "Don't push anything" → agent adds an active constraint; any `git push` bash call will be T3 and the judge will deny it for the rest of the session
 - "Only edit files in `src/`" → agent narrows `writableRoots` to `src/` for the session
 - "Don't touch the database" → agent classifies all database-touching `bash` commands as T3+
 

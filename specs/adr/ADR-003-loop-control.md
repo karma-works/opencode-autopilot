@@ -87,7 +87,7 @@ On circuit breaker trip:
 2. Display summary in TUI: "Autopilot paused — N actions blocked. Review and press [c]ontinue or [q]uit."
 3. User can: (a) resume autopilot, (b) switch to `build` mode for manual continuation, (c) quit
 
-In headless/CI mode: circuit breaker trips cause immediate exit with code 2.
+In headless/CI mode: circuit breaker trips cause immediate exit with code 1.
 
 ---
 
@@ -107,5 +107,5 @@ Session compaction clears the agent's context window. Loop detection state must 
 - Step count is always visible in TUI status bar during autopilot sessions
 - All loop events are logged to `.opencode/autopilot.log`
 - Step limit, timeout, and window sizes are all configurable in `opencode.json`
-- Headless mode exits with distinct exit codes: 0 (complete), 1 (circuit breaker), 2 (loop detected), 3 (timeout), 4 (step limit)
+- Headless mode exits with distinct exit codes: 0 (complete), 1 (circuit breaker tripped), 2 (loop detected), 3 (timeout), 4 (step limit reached)
 - Loop detection is unit-testable in isolation (pure function of call history)

@@ -53,9 +53,9 @@ We adopt a **source-aware policy**:
 
 "Remote-fetching" detection: if the bash command contains `curl`, `wget`, `fetch`, `http`, `https`, `ssh`, `scp`, `rsync` (remote), or pipes from network tools, its stdout is stripped from the judge. Local bash commands (test runners, linters, compilers, git log/status/diff) are included.
 
-**Why not blanket-strip (Claude Code)?** Our default judge is Llama Guard 3-1B — a small model with less adversarial robustness than Sonnet 4.6. The argument for structural immunity is stronger with a smaller model. However, the injection risk in a local coding agent is concentrated in remote tool outputs. Local bash stdout (test results, compiler errors, git status) provides essential context that reduces false positives significantly, and stripping it to defend against injection from local commands is disproportionate.
+**Why not blanket-strip (Claude Code)?** The injection risk in a local coding agent is concentrated in remote tool outputs, not local ones. Local bash stdout (test results, compiler errors, git status) provides essential context that reduces false positives significantly. Stripping it to defend against injection that can only arrive via remote sources is disproportionate — it discards high-value signal to guard against a threat that doesn't exist in local output.
 
-**Why not blanket-include (Codex)?** "Treat the transcript as untrusted" is a soft guarantee that must be reliably followed under adversarial pressure. With a 1B model as default judge, this is not a guarantee we can rely on. Structural immunity for the high-risk sources (remote content) is preferable.
+**Why not blanket-include (Codex)?** "Treat the transcript as untrusted" is a soft guarantee that must be reliably followed under adversarial pressure. For users running a local Llama Guard 3-1B judge (low capability, less injection-resistant), structural immunity on high-risk sources is preferable to relying on the model to ignore injected instructions. For hosted models (the default), this concern is less acute — hence the `autoMode.judgeIncludeRemoteOutputs` escape hatch for users who want full context with a capable judge.
 
 **Prompt injection on tool outputs** is handled by Layer 2 (Llama Prompt Guard 2-86M), which scans all tool outputs before they reach the **main agent's** context — regardless of whether they were stripped from the judge. This protects the agent from injection independently of judge visibility.
 
@@ -133,6 +133,8 @@ Fail-closed is mandatory. A judge that is unreachable must never default to allo
 ---
 
 ## Layer 2: Prompt Injection Scan on Tool Outputs
+
+> **Phase 1 status: Deferred to Phase 2.** Llama Prompt Guard 2-86M is a BERT-style encoder that cannot run through OpenCode's provider system or Ollama. Running it requires Transformers.js in Bun, which adds a ~200 MB model download on first run. To preserve the zero-setup goal for Phase 1, this layer is documented here but not implemented until Phase 2. The primary injection defence in Phase 1 is source-aware stripping (Layer 1 never sees remote tool outputs). A README warning notes the gap.
 
 **Model:** Llama Prompt Guard 2-86M  
 **HuggingFace:** https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M  

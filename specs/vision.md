@@ -35,15 +35,16 @@ The mode integrates at the same level as `plan` and `build`: selectable from the
 
 2. **Secondary LLM risk judge** — A configurable secondary LLM model evaluates boundary-crossing actions (Tier 3 operations) before they execute. The user chooses the model; the architecture handles the separation of concerns.
 
-3. **Four-tier risk classification** — Every tool call is classified into one of four risk tiers:
+3. **Three-tier risk classification** — Every tool call is classified into one of three risk tiers:
    - **T1 (Read-only):** Auto-approved, logged only
-   - **T2 (Reversible local):** Auto-approved with audit trail
-   - **T3 (Boundary-crossing):** Routed to secondary LLM judge
-   - **T4 (Irreversible/destructive):** Hard-blocked
+   - **T2 (Reversible local writes):** Auto-approved with audit trail
+   - **T3 (All bash + boundary-crossing):** Routed to secondary LLM judge
+
+   A static T4 hard-block list was considered and rejected: every blocked bash pattern has trivially equivalent alternatives in other languages. The LLM judge reasoning about *outcome* (not syntax) is the correct and complete gate.
 
 4. **External loop detection** — Loop detection runs outside the model. Repetition detection, A-B alternation detection, step limits, and wall-clock timeouts all fire independently of the agent's self-assessment.
 
-5. **Circuit breakers** — Escalate to human review when the secondary LLM denies too many actions in a row, preventing runaway denial spirals.
+5. **Circuit breakers** — Escalate to human review when the secondary LLM denies too many actions: 3 consecutive DENY decisions or 10 total DENY decisions in a session, whichever comes first. Prevents both rapid denial spirals and slow-burn evasion patterns.
 
 6. **First-class UX** — Mode is selectable in the TUI, visible in session status, shows step count and risk judgments in real time. Users can interrupt with standard controls (Ctrl+C) or demote to `build` mode mid-session.
 
@@ -51,7 +52,7 @@ The mode integrates at the same level as `plan` and `build`: selectable from the
 
 7. **Configurable trust boundary** — Users define `autoMode.writableRoots` and `autoMode.allowedNetworkHosts`; defaults are the current working directory and no external network.
 
-8. **Prompt injection defense** — The secondary LLM judge receives only user messages and tool call descriptions — never tool outputs or agent reasoning — preventing injected payloads from influencing the judge.
+8. **Prompt injection defense** — The judge uses source-aware output stripping: local tool outputs (file reads, bash stdout from local commands, grep results) are included for decision quality; remote tool outputs (webfetch responses, bash stdout from curl/wget/ssh) are stripped to prevent injected payloads from influencing the judge. Agent reasoning and system prompt internals are never included.
 
 9. **Headless support** — Autopilot can run non-interactively for CI/CD use cases, with structured JSON event output and hard termination on circuit breaker trips.
 
@@ -61,7 +62,7 @@ The mode integrates at the same level as `plan` and `build`: selectable from the
 
 ## Non-Goals
 
-- **This is not a jailbreak.** Autopilot does not remove safety constraints — it automates the approval workflow with a secondary LLM. The T4 hard-block list remains unconditional.
+- **This is not a jailbreak.** Autopilot does not remove safety constraints — it automates the approval workflow with a secondary LLM. The judge's unconditional deny categories (writes to protected paths, force-push to default branches, credential exfiltration) cannot be overridden by configuration.
 - **This is not an OS-level sandbox.** We rely on OpenCode's existing trust boundary configuration, not kernel-level isolation (seatbelt, bwrap). OS sandboxing may be added in a future phase.
 - **This is not a new agent architecture.** Autopilot reuses the existing agent loop. The secondary LLM judge is a standalone evaluator, not a new agent.
 - **This is not a headless replacement.** The primary interface remains the TUI. Headless support is a secondary target.
