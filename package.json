@@ -9,6 +9,9 @@
   },
   "files": [
     "src",
+    ".opencode/agents",
+    ".opencode/plugins",
+    ".opencode/autopilot.json",
     "modes",
     "README.md",
     "logo.svg",

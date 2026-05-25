@@ -39,22 +39,15 @@ bun test
 bun run typecheck
 ```
 
-For local development in this repository, `opencode.json` already registers the plugin and `.opencode/modes/auto.md` registers the `auto` mode.
+For local development in this repository, `.opencode/plugins/autopilot.ts` registers the plugin and `.opencode/agents/auto.md` registers the `auto` primary agent.
 
 To install into another OpenCode project:
 
-1. Add the agent to that project's `opencode.json`:
+1. Make sure the target project's `opencode.json` is valid OpenCode config. It can be as small as:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "agent": {
-    "auto": {
-      "mode": "primary",
-      "prompt": "{file:.opencode/modes/auto.md}",
-      "permission": "allow"
-    }
-  }
+  "$schema": "https://opencode.ai/config.json"
 }
 ```
 
@@ -69,11 +62,11 @@ For this local plugin file to work, keep the `opencode-autopilot` repository che
 
 Do not run `opencode plugin opencode-autopilot`: that npm package name is already used by a different project.
 
-3. Copy `modes/auto.md` to the target project:
+3. Copy `.opencode/agents/auto.md` to the target project:
 
 ```sh
-mkdir -p .opencode/modes
-cp modes/auto.md .opencode/modes/auto.md
+mkdir -p .opencode/agents
+cp /path/to/opencode-autopilot/.opencode/agents/auto.md .opencode/agents/auto.md
 ```
 
 4. Add Autopilot settings to `.opencode/autopilot.json`:
@@ -93,7 +86,13 @@ cp modes/auto.md .opencode/modes/auto.md
 }
 ```
 
-5. Start OpenCode and press `Tab` until `auto` is selected.
+5. Restart OpenCode and press `Tab` until `auto` is selected.
+
+You can verify agent discovery before starting the TUI:
+
+```sh
+opencode debug agent auto
+```
 
 ## Configuration
 
