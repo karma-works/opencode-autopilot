@@ -102,37 +102,90 @@ ADR-005 describes an LLM call at autopilot activation that suggests a minimum tr
 
 Ship a complete, production-usable autopilot as an OpenCode plugin. All core logic (risk classification, judge integration, loop detection) lands here and is tested independently of core.
 
+### Core-Readiness Design Principles
+
+Phase 1 is explicitly designed so that migrating to OpenCode core (Phase 2) requires rewriting only the plugin adapter layer, not the business logic. Every architectural decision below follows from this goal.
+
+**1. Strict module boundary: adapter vs. logic**
+
+`src/index.ts` is the only file that imports `@opencode-ai/plugin`. It is a thin adapter — its only job is translating hook inputs into calls to the pure logic modules and back. All logic in `src/classifier/`, `src/judge/`, `src/loop/`, `src/trust/`, and `src/audit/` has zero dependency on the plugin SDK.
+
+When contributing to core, `src/index.ts` is discarded and replaced with a new adapter against OpenCode's internal APIs. Nothing else changes.
+
+```
+src/index.ts            ← ADAPTER: imports @opencode-ai/plugin, wires hooks to logic
+src/classifier/         ← LOGIC: pure TypeScript, no plugin SDK imports
+src/judge/              ← LOGIC: pure TypeScript, no plugin SDK imports
+src/loop/               ← LOGIC: pure TypeScript, no plugin SDK imports
+src/trust/              ← LOGIC: pure TypeScript, no plugin SDK imports
+src/audit/              ← LOGIC: pure TypeScript, no plugin SDK imports
+```
+
+**2. No `any` types. Strict TypeScript throughout.**
+
+`tsconfig.json` sets `"strict": true` and `"noUncheckedIndexedAccess": true`. All function signatures, return types, and interface fields are explicitly typed. This is required by OpenCode core and catches integration errors before they reach runtime.
+
+**3. No external runtime dependencies beyond `@opencode-ai/plugin`.**
+
+Every runtime dependency adds friction to core integration. Use:
+- `Bun.file` / `Bun.write` for file I/O (available in the OpenCode runtime)
+- `fetch` (native, used by OpenCode's own SDK)
+- No lodash, axios, or other utility libraries
+
+`@opencode-ai/sdk` is a `devDependency` only — the client is passed in via `PluginInput.client`.
+
+**4. Use structured logging, not `console.log`.**
+
+In the plugin adapter: `client.app.log({ level: "info", message: "..." })`. In pure logic modules: accept a logger interface as a parameter so the same code works with OpenCode's internal logger in Phase 2.
+
+**5. Tests run against pure logic modules with no plugin SDK mocking.**
+
+Because the logic modules have no plugin SDK imports, `classifier.test.ts`, `loop.test.ts`, etc. run as plain Bun tests with zero mocking of OpenCode internals. This is the main practical benefit of the boundary discipline.
+
+**6. Phase 1-specific workarounds are isolated and labelled.**
+
+Two patterns in the adapter will change in Phase 2:
+- `fetch(new URL("/tui/publish", serverUrl), ...)` → replaced with a proper TUI API call
+- `client.session.messages()` polling to detect `AUTOPILOT_DONE` → replaced with a stream listener or dedicated event
+
+These are confined to `src/index.ts` and marked with `// PHASE1-WORKAROUND:` comments so they are easy to find and replace.
+
+---
+
 ### File Structure
 
 ```
 opencode-autopilot/
   src/
-    index.ts                    # Plugin entry point + loop driver
+    index.ts                    # ADAPTER ONLY — plugin entry point, wires hooks to logic
     classifier/
       tier.ts                   # Risk tier types (T1/T2/T3)
-      classify.ts               # classifyToolCall() pure function
+      classify.ts               # classifyToolCall() — pure function, no SDK imports
     judge/
-      client.ts                 # LLM judge client (via OpenCode's provider abstraction)
+      client.ts                 # judge() — pure function, accepts OpencodeClient interface
       policy-template.md        # Fixed judge rules framework
       policy.md                 # Pluggable outcome risk taxonomy
-      types.ts                  # JudgeDecision type
+      types.ts                  # JudgeDecision, JudgeConfig types
     loop/
-      detector.ts               # Loop detection (4 mechanisms)
-      state.ts                  # AutopilotState type and persistence
+      detector.ts               # detectLoop() — pure function of call history
+      state.ts                  # AutopilotState type and Bun-backed persistence
     trust/
-      boundary.ts               # Trust boundary evaluation
-      protected-paths.ts        # Protected path list (never auto-approve writes)
+      boundary.ts               # isWithinBoundary() — pure function
+      protected-paths.ts        # Protected path list
     audit/
-      logger.ts                 # Structured audit log writer
+      logger.ts                 # AuditLogger — accepts a write function, no Bun direct calls
   modes/
     auto.md                     # Agent system prompt for auto mode
   test/
-    classifier.test.ts
-    loop.test.ts
-    judge.test.ts
-    trust.test.ts
+    classifier.test.ts          # No mocking needed — pure function tests
+    loop.test.ts                # No mocking needed — pure function tests
+    judge.test.ts               # Mocks the LLM call only, not plugin SDK
+    trust.test.ts               # No mocking needed — pure function tests
+    index.test.ts               # Integration test: full hook wiring with mock PluginInput
   opencode.json                 # Mode definition + autoMode config defaults
   package.json
+  tsconfig.json                 # strict: true, noUncheckedIndexedAccess: true
+  tsconfig.build.json           # emitDeclarationOnly: true for publishing
   README.md
 ```
 
@@ -338,6 +391,8 @@ Written at `modes/auto.md` (Phase 0.3 ✅). Key behaviours encoded: work continu
 - [ ] State survives session compaction
 - [ ] Audit log written to `.opencode/autopilot.log`
 - [ ] Headless mode exits with correct exit codes: 0 (complete), 1 (circuit breaker), 2 (loop), 3 (timeout), 4 (step limit)
+- [ ] No `@opencode-ai/plugin` imports outside `src/index.ts` (boundary discipline — verify with `grep -r "@opencode-ai/plugin" src/ --include="*.ts" | grep -v "src/index.ts"` returning empty)
+- [ ] All pure logic tests pass with zero plugin SDK mocking
 
 ---
 
@@ -346,6 +401,18 @@ Written at `modes/auto.md` (Phase 0.3 ✅). Key behaviours encoded: work continu
 ### Goal
 
 Contribute `auto` mode as a first-class mode to OpenCode core, with proper TUI integration and lifecycle hooks.
+
+### Migration from Phase 1
+
+Because Phase 1 enforces strict adapter/logic separation, the migration is surgical:
+
+1. **Copy `src/classifier/`, `src/judge/`, `src/loop/`, `src/trust/`, `src/audit/` verbatim** into the OpenCode monorepo (likely `packages/opencode/src/auto/`). No changes required — these modules have no plugin SDK dependencies.
+2. **Discard `src/index.ts`** (the plugin adapter).
+3. **Write a new core adapter** that calls the same logic functions from OpenCode's internal agent loop, replacing the two Phase 1 workarounds:
+   - `fetch(/tui/publish)` → internal TUI event emission
+   - `client.session.messages()` polling → stream listener or dedicated `session.idle` event payload
+4. **Replace `PHASE1-WORKAROUND:` comments** — grep for these in the codebase to find everything that needs changing.
+5. **Verify tests still pass unchanged** — pure logic tests require no modification.
 
 ### Prerequisites
 
