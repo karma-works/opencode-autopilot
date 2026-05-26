@@ -75,7 +75,19 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
       sessionAgents.set(input.sessionID, input.agent);
       // input.model.providerID is always present; input.provider.info may be absent in older OpenCode builds
       activeProviderID = input.model.providerID;
-      activeProviderKey = (input.provider as { info?: { key?: string } } | undefined)?.info?.key ?? null;
+      // Prefer key from hook input; fall back to config.providers API (resolves env-var and config-stored keys)
+      const hookKey = (input.provider as { info?: { key?: string } } | undefined)?.info?.key;
+      if (hookKey) {
+        activeProviderKey = hookKey;
+      } else {
+        try {
+          const result = await client.config.providers({ query: { directory: root } });
+          const match = result.data?.providers.find((p) => p.id === input.model.providerID);
+          activeProviderKey = match?.key ?? null;
+        } catch {
+          activeProviderKey = null;
+        }
+      }
     },
 
     "tool.execute.before": async (input, output): Promise<void> => {
