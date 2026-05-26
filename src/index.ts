@@ -73,8 +73,9 @@ export const AutopilotPlugin: Plugin = async (rawInput: unknown, rawOptions?: Re
   return {
     "chat.params": async (input, _output): Promise<void> => {
       sessionAgents.set(input.sessionID, input.agent);
-      activeProviderID = input.provider.info.id;
-      activeProviderKey = input.provider.info.key ?? null;
+      // input.model.providerID is always present; input.provider.info may be absent in older OpenCode builds
+      activeProviderID = input.model.providerID;
+      activeProviderKey = (input.provider as { info?: { key?: string } } | undefined)?.info?.key ?? null;
     },
 
     "tool.execute.before": async (input, output): Promise<void> => {
